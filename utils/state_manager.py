@@ -1,156 +1,130 @@
-# utils/state_manager.py
-# Session state manager for ScopeCraft
-# Single-session now — DB persistence ready for future
-
 import streamlit as st
-
-
-# ── Keys ────────────────────────────────────────────────────────────────────
-
-STATE_KEYS = {
-    "idea": None,                  # Raw user idea (str)
-    "qa_pairs": [],                # List of {"question": str, "answer": str}
-    "chat_history": [],            # List of {"role": "user"|"assistant", "content": str}
-    "conflict_flags": [],          # List of {"conflict": str, "explanation": str}
-    "brd": None,                   # Generated BRD markdown (str)
-    "user_stories": None,          # Generated User Stories markdown (str)
-    "interview_complete": False,   # Flag: interview done, trigger generation
-    "question_count": 0,           # Track how many questions asked (max 10)
-    "completeness_score": 0,       # 0–100, generation triggers at 80+
-    "generation_done": False,      # Flag: BRD + stories generated
-}
-
-
-# ── Init ─────────────────────────────────────────────────────────────────────
+from utils.db_manager import save_session, load_session
 
 def init_state():
-    """
-    Call once at app.py startup.
-    Sets all keys in st.session_state if not already present.
-    Safe to call on every rerun — won't overwrite existing values.
-    """
-    for key, default in STATE_KEYS.items():
+    """Initialise all session state keys if not present."""
+    defaults = {
+        'phase':           'landing',   # landing | interview | conflict | done
+        'idea':            '',
+        'qa_pairs':        [],          # [{'question': ..., 'answer': ...}]
+        'chat_history':    [],          # [{'role': 'assistant'|'user', 'content': ...}]
+        'conflict_flags':  [],          # [{'title':..,'explanation':..,'suggestion':..}]
+        'brd':             '',
+        'user_stories':    '',
+        'question_count':  0,
+        'completeness':    0,
+        'generation_done': False,
+        'conflict_done':   False,
+        # Session persistence keys
+        'session_id':      None,        # DB row ID once saved
+        'session_name':    '',          # User-given name
+    }
+    for key, val in defaults.items():
         if key not in st.session_state:
-            # Deep copy lists so each session gets own list, not shared ref
-            if isinstance(default, list):
-                st.session_state[key] = []
-            else:
-                st.session_state[key] = default
-
-
-# ── Reset ────────────────────────────────────────────────────────────────────
+            st.session_state[key] = val
 
 def reset_state():
+    """Full wipe — back to landing."""
+    keys = [
+        'phase', 'idea', 'qa_pairs', 'chat_history', 'conflict_flags',
+        'brd', 'user_stories', 'question_count', 'completeness',
+        'generation_done', 'conflict_done', 'session_id', 'session_name'
+    ]
+    for key in keys:
+        if key in st.session_state:
+            del st.session_state[key]
+    init_state()
+
+# --- Getters ---
+def get_phase():           return st.session_state.get('phase', 'landing')
+def get_idea():            return st.session_state.get('idea', '')
+def get_qa_pairs():        return st.session_state.get('qa_pairs', [])
+def get_chat_history():    return st.session_state.get('chat_history', [])
+def get_conflict_flags():  return st.session_state.get('conflict_flags', [])
+def get_brd():             return st.session_state.get('brd', '')
+def get_user_stories():    return st.session_state.get('user_stories', '')
+def get_question_count():  return st.session_state.get('question_count', 0)
+def get_completeness():    return st.session_state.get('completeness', 0)
+def is_generation_done():  return st.session_state.get('generation_done', False)
+def is_conflict_done():    return st.session_state.get('conflict_done', False)
+def get_session_id():      return st.session_state.get('session_id', None)
+def get_session_name():    return st.session_state.get('session_name', '')
+
+# --- Setters ---
+def set_phase(v):          st.session_state['phase'] = v
+def set_idea(v):           st.session_state['idea'] = v
+def set_qa_pairs(v):       st.session_state['qa_pairs'] = v
+def set_chat_history(v):   st.session_state['chat_history'] = v
+def set_conflict_flags(v): st.session_state['conflict_flags'] = v
+def set_brd(v):            st.session_state['brd'] = v
+def set_user_stories(v):   st.session_state['user_stories'] = v
+def set_question_count(v): st.session_state['question_count'] = v
+def set_completeness(v):   st.session_state['completeness'] = v
+def set_generation_done(v):st.session_state['generation_done'] = v
+def set_conflict_done(v):  st.session_state['conflict_done'] = v
+def set_session_id(v):     st.session_state['session_id'] = v
+def set_session_name(v):   st.session_state['session_name'] = v
+
+# --- Persistence helpers ---
+
+def _build_state_snapshot() -> dict:
+    """Pull current session_state into a plain dict for DB save."""
+    return {
+        'idea':           get_idea(),
+        'qa_pairs':       get_qa_pairs(),
+        'chat_history':   get_chat_history(),
+        'conflict_flags': get_conflict_flags(),
+        'brd':            get_brd(),
+        'user_stories':   get_user_stories(),
+    }
+
+def save_current_session(name: str = None) -> int:
     """
-    Full session reset. Bound to Reset button in UI.
-    Future: before reset, persist to DB here.
+    Save current state to DB.
+    If session_id exists → UPDATE. Else → INSERT.
+    Returns session_id.
     """
-    for key, default in STATE_KEYS.items():
-        if isinstance(default, list):
-            st.session_state[key] = []
-        else:
-            st.session_state[key] = default
+    session_name = name or get_session_name() or 'Untitled Session'
+    set_session_name(session_name)
+    snapshot = _build_state_snapshot()
+    sid = save_session(
+        name=session_name,
+        state=snapshot,
+        session_id=get_session_id()
+    )
+    set_session_id(sid)
+    return sid
 
-
-# ── Q&A ──────────────────────────────────────────────────────────────────────
-
-def add_qa_pair(question: str, answer: str):
-    """Append one Q&A exchange to history."""
-    st.session_state["qa_pairs"].append({
-        "question": question,
-        "answer": answer
-    })
-
-
-def get_qa_pairs() -> list:
-    """Return all Q&A pairs collected so far."""
-    return st.session_state["qa_pairs"]
-
-
-# ── Chat History ─────────────────────────────────────────────────────────────
-
-def add_chat_message(role: str, content: str):
+def load_session_into_state(session_id: int) -> bool:
     """
-    role: 'user' or 'assistant'
-    Appends to chat_history — used by Streamlit chat UI.
+    Load DB row into Streamlit session_state.
+    Returns True on success, False if not found.
     """
-    st.session_state["chat_history"].append({
-        "role": role,
-        "content": content
-    })
+    data = load_session(session_id)
+    if not data:
+        return False
 
+    reset_state()  # wipe first, then populate
 
-def get_chat_history() -> list:
-    """Return full chat history for UI render."""
-    return st.session_state["chat_history"]
+    set_idea(data['idea'])
+    set_qa_pairs(data['qa_pairs'])
+    set_chat_history(data['chat_history'])
+    set_conflict_flags(data['conflict_flags'])
+    set_brd(data['brd'])
+    set_user_stories(data['user_stories'])
+    set_session_id(data['session_id'])
+    set_session_name(data['session_name'])
 
+    # Restore phase from loaded data
+    if data['brd']:
+        set_phase('done')
+        set_generation_done(True)
+        set_conflict_done(True)
+    elif data['conflict_flags']:
+        set_phase('conflict')
+    elif data['chat_history']:
+        set_phase('interview')
+    else:
+        set_phase('landing')
 
-# ── Conflicts ────────────────────────────────────────────────────────────────
-
-def set_conflict_flags(flags: list):
-    """Store conflict flags from Conflict Agent."""
-    st.session_state["conflict_flags"] = flags
-
-
-def get_conflict_flags() -> list:
-    return st.session_state["conflict_flags"]
-
-
-# ── Outputs ──────────────────────────────────────────────────────────────────
-
-def set_brd(brd_markdown: str):
-    st.session_state["brd"] = brd_markdown
-
-
-def get_brd() -> str:
-    return st.session_state["brd"]
-
-
-def set_user_stories(stories_markdown: str):
-    st.session_state["user_stories"] = stories_markdown
-
-
-def get_user_stories() -> str:
-    return st.session_state["user_stories"]
-
-
-# ── Counters & Flags ─────────────────────────────────────────────────────────
-
-def increment_question_count():
-    st.session_state["question_count"] += 1
-
-
-def get_question_count() -> int:
-    return st.session_state["question_count"]
-
-
-def set_completeness_score(score: int):
-    st.session_state["completeness_score"] = score
-
-
-def get_completeness_score() -> int:
-    return st.session_state["completeness_score"]
-
-
-def mark_interview_complete():
-    st.session_state["interview_complete"] = True
-
-
-def is_interview_complete() -> bool:
-    return st.session_state["interview_complete"]
-
-
-def mark_generation_done():
-    st.session_state["generation_done"] = True
-
-
-def is_generation_done() -> bool:
-    return st.session_state["generation_done"]
-
-
-def set_idea(idea_text: str):
-    st.session_state["idea"] = idea_text
-
-
-def get_idea() -> str:
-    return st.session_state["idea"]
+    return True

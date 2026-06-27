@@ -1,258 +1,262 @@
-# app.py
-# ScopeCraft — Streamlit entry point
-# Chat interface + role tabs + sidebar info
-
 import streamlit as st
+from utils.db_manager import init_db, list_sessions, delete_session
 from utils.state_manager import (
-    init_state,
-    reset_state,
-    set_idea,
-    get_idea,
-    add_chat_message,
-    get_chat_history,
-    get_completeness_score,
-    get_question_count,
-    is_interview_complete,
-    is_generation_done,
-    get_brd,
-    get_user_stories,
-    get_conflict_flags,
+    init_state, reset_state,
+    get_phase, set_phase,
+    get_idea, set_idea,
+    get_chat_history, set_chat_history,
+    get_qa_pairs, set_qa_pairs,
+    get_conflict_flags, set_conflict_flags,
+    get_brd, get_user_stories,
+    get_question_count, set_question_count,
+    get_completeness, set_completeness,
+    is_generation_done, set_generation_done,
+    is_conflict_done, set_conflict_done,
+    get_session_id, get_session_name,
+    save_current_session, load_session_into_state,
+    set_session_name
 )
 from agents.interview_agent import start_interview, process_answer
 from agents.conflict_agent import run_conflict_scan, handle_conflict_resolution
 from agents.generator_agent import run_generation
 
-
-# ── Page Config ───────────────────────────────────────────────────────────────
-
-st.set_page_config(
-    page_title="ScopeCraft",
-    page_icon="🔭",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
-# ── Init State ────────────────────────────────────────────────────────────────
-
+# ── Init ──────────────────────────────────────────────────────────────────────
+init_db()
 init_state()
 
-
-# ── Session flags (not in state_manager — UI only) ────────────────────────────
-
-if "app_phase" not in st.session_state:
-    # Phases: "landing" | "interview" | "conflict" | "done"
-    st.session_state["app_phase"] = "landing"
-
-if "awaiting_conflict_resolve" not in st.session_state:
-    st.session_state["awaiting_conflict_resolve"] = False
-
+st.set_page_config(page_title="ScopeCraft", page_icon="🔭", layout="wide")
+st.title("🔭 ScopeCraft")
+st.caption("Agentic Requirements Engineering")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
-
 with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/telescope.png", width=64)
-    st.title("🔭 ScopeCraft")
-    st.caption("Agentic Requirements Engineering")
-    st.markdown("---")
-    st.markdown("""
-**What ScopeCraft does:**
+    st.header("Session Info")
+    sid = get_session_id()
+    sname = get_session_name()
+    if sid:
+        st.success(f"**{sname}**")
+        st.caption(f"Session ID: {sid}")
+        if st.button("💾 Save Now"):
+            save_current_session()
+            st.success("Saved!")
+    else:
+        st.info("No active session")
 
-1. 💬 Interviews you about your product idea
-2. 🔍 Detects conflicts in your requirements
-3. 📄 Generates a professional BRD
-4. 📋 Produces a MoSCoW User Story backlog
+    st.divider()
+    st.subheader("Metrics")
+    st.metric("Questions Asked", get_question_count())
+    st.metric("Completeness", f"{get_completeness()}%")
+    st.metric("Q&A Pairs", len(get_qa_pairs()))
 
----
-**How to use:**
-
-- Describe your app idea in the text box
-- Answer the Interview Agent's questions
-- Review any flagged conflicts
-- View generated documents in the tabs
-
----
-**Built with:**
-- 🦙 Llama 3.3 70B via Groq
-- 🔗 LangChain
-- ⚡ Streamlit
-""")
-    st.markdown("---")
-    if st.session_state["app_phase"] != "landing":
-        score = get_completeness_score()
-        q_count = get_question_count()
-        st.metric("Completeness", f"{score}%")
-        st.metric("Questions Asked", f"{q_count} / 10")
-        conflicts = get_conflict_flags()
-        if conflicts:
-            st.warning(f"⚠️ {len(conflicts)} conflict(s) flagged")
-        else:
-            if is_interview_complete():
-                st.success("✅ No conflicts")
-
-
-# ── Main Area ─────────────────────────────────────────────────────────────────
-
-st.title("🔭 ScopeCraft")
-st.caption("Turn your product idea into structured development artifacts — powered by AI agents.")
-st.markdown("---")
-
+    st.divider()
+    if st.button("🔄 Reset / New Session"):
+        reset_state()
+        st.rerun()
 
 # ── PHASE: LANDING ────────────────────────────────────────────────────────────
+if get_phase() == 'landing':
 
-if st.session_state["app_phase"] == "landing":
-    st.subheader("What's your product idea?")
-    st.markdown(
-        "Describe your app concept below — rough ideas welcome. "
-        "ScopeCraft's Interview Agent will ask targeted questions to extract full requirements."
+    # --- Resume existing session ---
+    sessions = list_sessions()
+    if sessions:
+        st.subheader("📂 Resume a Previous Session")
+        cols = st.columns([3, 1, 1])
+        cols[0].markdown("**Session Name**")
+        cols[1].markdown("**Last Updated**")
+        cols[2].markdown("**Actions**")
+
+        for s in sessions:
+            c0, c1, c2 = st.columns([3, 1, 1])
+            idea_preview = (s['idea'][:60] + '...') if s['idea'] and len(s['idea']) > 60 else s['idea']
+            c0.markdown(f"**{s['name']}**  \n_{idea_preview}_")
+            c1.caption(s['updated_at'][:16].replace('T', ' '))
+            with c2:
+                bcol1, bcol2 = st.columns(2)
+                if bcol1.button("▶ Resume", key=f"resume_{s['id']}"):
+                    if load_session_into_state(s['id']):
+                        st.rerun()
+                if bcol2.button("🗑", key=f"del_{s['id']}"):
+                    delete_session(s['id'])
+                    st.rerun()
+
+        st.divider()
+
+    # --- New session ---
+    st.subheader("🆕 Start New Session")
+    session_name_input = st.text_input(
+        "Session name",
+        placeholder="e.g. Food Delivery App — v1",
+        key="session_name_input"
     )
-
     idea_input = st.text_area(
-        label="Your idea",
-        placeholder=(
-            "e.g. I want to build a mobile app that helps freelancers track their invoices, "
-            "send payment reminders, and generate monthly income reports..."
-        ),
-        height=180,
-        key="idea_input_box",
+        "Describe your app idea",
+        placeholder="e.g. I want to build a marketplace where freelancers can offer services...",
+        height=150,
+        key="idea_input"
     )
 
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        submit = st.button("🚀 Start", type="primary", use_container_width=True)
-
-    if submit:
+    if st.button("🚀 Start Requirements Interview", type="primary"):
         if not idea_input.strip():
-            st.warning("Please enter your product idea before continuing.")
+            st.warning("Enter an app idea first.")
+        elif not session_name_input.strip():
+            st.warning("Give this session a name.")
         else:
             set_idea(idea_input.strip())
-            add_chat_message("user", idea_input.strip())
-            with st.spinner("Interview Agent thinking..."):
-                response = start_interview()
-            st.session_state["app_phase"] = "interview"
+            set_session_name(session_name_input.strip())
+
+            with st.spinner("Interview Agent starting..."):
+                first_q = start_interview(idea_input.strip())
+                history = [
+                    {'role': 'assistant', 'content': first_q}
+                ]
+                set_chat_history(history)
+                set_question_count(1)
+                set_phase('interview')
+
+            # Auto-save on session start
+            save_current_session(session_name_input.strip())
             st.rerun()
 
+# ── PHASE: INTERVIEW ──────────────────────────────────────────────────────────
+elif get_phase() == 'interview':
 
-# ── PHASE: INTERVIEW + CONFLICT + DONE ───────────────────────────────────────
+    st.subheader("💬 Requirements Interview")
+    completeness = get_completeness()
+    st.progress(completeness / 100, text=f"Completeness: {completeness}%")
 
-else:
-    # ── Reset Button ──────────────────────────────────────────────────────────
-    col_title, col_reset = st.columns([8, 1])
-    with col_reset:
-        if st.button("🔄 Reset", use_container_width=True):
-            reset_state()
-            st.session_state["app_phase"] = "landing"
-            st.session_state["awaiting_conflict_resolve"] = False
+    # Render chat history
+    for msg in get_chat_history():
+        with st.chat_message(msg['role']):
+            st.markdown(msg['content'])
+
+    # User input
+    user_input = st.chat_input("Your answer...")
+    if user_input:
+        history = get_chat_history()
+        history.append({'role': 'user', 'content': user_input})
+        set_chat_history(history)
+
+        with st.spinner("Interview Agent thinking..."):
+            result = process_answer(user_input)
+
+        # result = {'message': str, 'completeness': int, 'done': bool, 'qa_pair': dict}
+        history.append({'role': 'assistant', 'content': result['message']})
+        set_chat_history(history)
+        set_completeness(result['completeness'])
+        set_question_count(get_question_count() + 1)
+
+        if result.get('qa_pair'):
+            qa = get_qa_pairs()
+            qa.append(result['qa_pair'])
+            set_qa_pairs(qa)
+
+        # Auto-save after every answer
+        save_current_session()
+
+        if result.get('done'):
+            with st.spinner("Conflict Agent scanning..."):
+                flags = run_conflict_scan(get_qa_pairs())
+                set_conflict_flags(flags)
+
+            save_current_session()
+
+            if flags:
+                set_phase('conflict')
+            else:
+                set_conflict_done(True)
+                with st.spinner("Generator Agent building documents..."):
+                    run_generation(get_idea(), get_qa_pairs(), [])
+                set_generation_done(True)
+                set_phase('done')
+                save_current_session()
+
+        st.rerun()
+
+# ── PHASE: CONFLICT ───────────────────────────────────────────────────────────
+elif get_phase() == 'conflict':
+
+    st.subheader("⚠️ Conflicts Detected")
+    st.info("Resolve conflicts below before documents are generated.")
+
+    flags = get_conflict_flags()
+    for i, flag in enumerate(flags):
+        with st.expander(f"⚠️ {flag.get('title', f'Conflict {i+1}')}"):
+            st.markdown(f"**Source A:** {flag.get('source_a', '')}")
+            st.markdown(f"**Source B:** {flag.get('source_b', '')}")
+            st.markdown(f"**Explanation:** {flag.get('explanation', '')}")
+            st.markdown(f"**Suggestion:** {flag.get('suggestion', '')}")
+
+    # Render conflict chat history
+    for msg in get_chat_history():
+        with st.chat_message(msg['role']):
+            st.markdown(msg['content'])
+
+    col1, col2 = st.columns(2)
+    with col1:
+        clarification = st.chat_input("Clarify a conflict or type your resolution...")
+    with col2:
+        if st.button("✅ Proceed to Generation", type="primary"):
+            set_conflict_done(True)
+            with st.spinner("Generator Agent building documents..."):
+                run_generation(get_idea(), get_qa_pairs(), get_conflict_flags())
+            set_generation_done(True)
+            set_phase('done')
+            save_current_session()
             st.rerun()
 
-    # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab_chat, tab_brd, tab_stories = st.tabs([
-        "💬 Interview",
-        "📄 BRD",
-        "📋 User Stories",
-    ])
+    if clarification:
+        history = get_chat_history()
+        history.append({'role': 'user', 'content': clarification})
+        set_chat_history(history)
 
-    # ── TAB: CHAT ─────────────────────────────────────────────────────────────
-    with tab_chat:
+        with st.spinner("Re-scanning conflicts..."):
+            result = handle_conflict_resolution(clarification, get_qa_pairs())
 
-        # Progress bar during interview
-        if st.session_state["app_phase"] == "interview":
-            score = get_completeness_score()
-            st.markdown(f"**Requirements Completeness: {score}%**")
-            st.progress(score / 100)
-            st.markdown("---")
+        history.append({'role': 'assistant', 'content': result['message']})
+        set_chat_history(history)
 
-        # Render chat history
-        chat_history = get_chat_history()
-        for msg in chat_history:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+        if result.get('resolved'):
+            set_conflict_flags(result.get('remaining_flags', []))
+            if not result.get('remaining_flags'):
+                set_conflict_done(True)
+                with st.spinner("Generator Agent building documents..."):
+                    run_generation(get_idea(), get_qa_pairs(), [])
+                set_generation_done(True)
+                set_phase('done')
 
-        # ── Interview phase input ─────────────────────────────────────────────
-        if st.session_state["app_phase"] == "interview":
-            user_input = st.chat_input("Your answer...")
-            if user_input:
-                with st.chat_message("user"):
-                    st.markdown(user_input)
+        save_current_session()
+        st.rerun()
 
-                with st.spinner("Interview Agent thinking..."):
-                    response, interview_done = process_answer(user_input)
+# ── PHASE: DONE ───────────────────────────────────────────────────────────────
+elif get_phase() == 'done':
 
-                if interview_done:
-                    # Move to conflict scan
-                    with st.spinner("Conflict Agent scanning requirements..."):
-                        conflict_msg, has_conflicts = run_conflict_scan()
+    st.subheader("✅ Documents Ready")
+    st.success(f"Session: **{get_session_name()}** — saved to DB.")
 
-                    if has_conflicts:
-                        st.session_state["app_phase"] = "conflict"
-                        st.session_state["awaiting_conflict_resolve"] = True
-                    else:
-                        # No conflicts — generate immediately
-                        st.session_state["app_phase"] = "generating"
-                        with st.spinner("Generating documents..."):
-                            run_generation()
-                        st.session_state["app_phase"] = "done"
+    tab_ba, tab_dev = st.tabs(["📋 BA View — BRD", "👨‍💻 Dev View — User Stories"])
 
-                st.rerun()
-
-        # ── Conflict resolution phase input ───────────────────────────────────
-        elif st.session_state["app_phase"] == "conflict":
-            user_input = st.chat_input("Resolve conflicts or type 'proceed' to continue...")
-            if user_input:
-                with st.chat_message("user"):
-                    st.markdown(user_input)
-
-                with st.spinner("Re-scanning conflicts..."):
-                    response, ready = handle_conflict_resolution(user_input)
-
-                if ready:
-                    st.session_state["awaiting_conflict_resolve"] = False
-                    with st.spinner("Generating documents..."):
-                        run_generation()
-                    st.session_state["app_phase"] = "done"
-
-                st.rerun()
-
-        # ── Done phase — no more input ────────────────────────────────────────
-        elif st.session_state["app_phase"] == "done":
-            st.success("✅ Documents ready — switch to BRD or User Stories tabs above.")
-
-    # ── TAB: BRD ─────────────────────────────────────────────────────────────
-    with tab_brd:
-        if is_generation_done():
-            brd = get_brd()
-            if brd:
-                col_brd, col_copy = st.columns([9, 1])
-                with col_copy:
-                    st.download_button(
-                        label="⬇️ Download",
-                        data=brd,
-                        file_name="ScopeCraft_BRD.md",
-                        mime="text/markdown",
-                        use_container_width=True,
-                    )
-                st.markdown(brd)
-            else:
-                st.info("BRD not yet generated.")
+    with tab_ba:
+        brd = get_brd()
+        if brd:
+            st.markdown(brd)
+            st.download_button(
+                "⬇️ Download BRD (.md)",
+                data=brd,
+                file_name=f"{get_session_name().replace(' ', '_')}_BRD.md",
+                mime="text/markdown"
+            )
         else:
-            st.info("Complete the interview to generate the BRD.")
+            st.warning("BRD not generated.")
 
-    # ── TAB: USER STORIES ─────────────────────────────────────────────────────
-    with tab_stories:
-        if is_generation_done():
-            stories = get_user_stories()
-            if stories:
-                col_st, col_dl = st.columns([9, 1])
-                with col_dl:
-                    st.download_button(
-                        label="⬇️ Download",
-                        data=stories,
-                        file_name="ScopeCraft_UserStories.md",
-                        mime="text/markdown",
-                        use_container_width=True,
-                    )
-                st.markdown(stories)
-            else:
-                st.info("User Stories not yet generated.")
+    with tab_dev:
+        stories = get_user_stories()
+        if stories:
+            st.markdown(stories)
+            st.download_button(
+                "⬇️ Download User Stories (.md)",
+                data=stories,
+                file_name=f"{get_session_name().replace(' ', '_')}_UserStories.md",
+                mime="text/markdown"
+            )
         else:
-            st.info("Complete the interview to generate User Stories.")
+            st.warning("User Stories not generated.")

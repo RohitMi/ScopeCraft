@@ -1,7 +1,4 @@
 # agents/generator_agent.py
-# Generator Agent — produces BRD + User Stories in single LLM call
-# BRD: fixed structure | User Stories: MoSCoW prioritised
-
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
@@ -14,14 +11,10 @@ from utils.state_manager import (
     get_conflict_flags,
     set_brd,
     set_user_stories,
-    mark_generation_done,
-    add_chat_message,
+    set_generation_done,
 )
 
 load_dotenv()
-
-
-# ── LLM Init ─────────────────────────────────────────────────────────────────
 
 def get_llm():
     return ChatGroq(
@@ -29,9 +22,6 @@ def get_llm():
         model_name="llama-3.3-70b-versatile",
         temperature=0.3,
     )
-
-
-# ── System Prompt ─────────────────────────────────────────────────────────────
 
 GENERATOR_SYSTEM_PROMPT = """
 You are ScopeCraft's Generator Agent — an expert Business Analyst and 
@@ -81,15 +71,14 @@ Use EXACTLY these sections in this order:
 ---
 
 DOCUMENT 2 — USER STORIES (MoSCoW, markdown):
-Use EXACTLY this structure:
 
 # User Story Backlog
 
 ## MoSCoW Priority Legend
-- 🔴 Must Have — critical, product fails without this
-- 🟡 Should Have — important, include if possible
-- 🟢 Could Have — nice to have, include if time permits
-- ⚪ Won't Have — explicitly out of scope for this version
+- Must Have — critical, product fails without this
+- Should Have — important, include if possible
+- Could Have — nice to have, include if time permits
+- Won't Have — explicitly out of scope for this version
 
 ## Epics & Stories
 
@@ -97,62 +86,52 @@ Use EXACTLY this structure:
 **Goal:** <what this epic achieves>
 
 | Story ID | User Story | Acceptance Criteria | MoSCoW |
-|----------|------------|--------------------| -------|
-| US-001 | As a <actor>, I want to <action> so that <benefit> | <testable criteria> | 🔴 Must Have |
-
-<repeat for each epic>
+|----------|------------|---------------------|--------|
+| US-001 | As a <actor>, I want to <action> so that <benefit> | <testable criteria> | Must Have |
 
 ## Summary
 | Priority | Count |
 |----------|-------|
-| 🔴 Must Have | X |
-| 🟡 Should Have | X |
-| 🟢 Could Have | X |
-| ⚪ Won't Have | X |
+| Must Have | X |
+| Should Have | X |
+| Could Have | X |
+| Won't Have | X |
 | **Total** | **X** |
 
 ---
 
 RULES:
-- Be specific — use actual product details from requirements, not generic placeholders
-- BRD must be professional enough for a client presentation
-- User stories must be specific enough for a developer to start coding
-- If conflicts were flagged, note them in Assumptions & Constraints section
-- Return STRICT JSON only — no extra text outside JSON
+- Be specific — use actual product details, not generic placeholders
+- BRD professional enough for client presentation
+- Stories specific enough for developer to start coding
+- If conflicts flagged, note in Assumptions & Constraints
+- Return STRICT JSON only
 
 RESPONSE FORMAT:
 {
-  "brd": "<full BRD markdown as string>",
-  "user_stories": "<full User Stories markdown as string>",
-  "generation_summary": "<one line: what was generated and key highlights>"
+  "brd": "<full BRD markdown>",
+  "user_stories": "<full User Stories markdown>",
+  "generation_summary": "<one line summary>"
 }
 """
 
-
-# ── Build Context ─────────────────────────────────────────────────────────────
-
-def _build_context() -> list:
-    idea = get_idea()
-    qa_pairs = get_qa_pairs()
-    conflict_flags = get_conflict_flags()
-
-    # Q&A history
+def _build_context(idea: str, qa_pairs: list, conflict_flags: list) -> list:
     qa_text = ""
     for i, pair in enumerate(qa_pairs):
         qa_text += f"\nQ{i+1}: {pair['question']}\nA{i+1}: {pair['answer']}\n"
 
-    # Conflict summary
     conflict_text = "None detected."
     if conflict_flags:
         conflict_text = ""
         for c in conflict_flags:
             conflict_text += (
-                f"\n- Conflict: {c.get('title', '')}\n"
-                f"  Issue: {c.get('explanation', '')}\n"
-                f"  Suggestion: {c.get('suggestion', '')}\n"
+                f"\n- {c.get('title','')}: {c.get('explanation','')}"
+                f" | Suggestion: {c.get('suggestion','')}\n"
             )
 
-    user_content = f"""
+    return [
+        SystemMessage(content=GENERATOR_SYSTEM_PROMPT),
+        HumanMessage(content=f"""
 Generate BRD and User Stories from these requirements:
 
 ORIGINAL IDEA:
@@ -161,73 +140,39 @@ ORIGINAL IDEA:
 REQUIREMENTS Q&A:
 {qa_text}
 
-KNOWN CONFLICTS / RESOLUTIONS:
+KNOWN CONFLICTS:
 {conflict_text}
 
-Produce both documents now. Return strict JSON only.
-"""
-    return [
-        SystemMessage(content=GENERATOR_SYSTEM_PROMPT),
-        HumanMessage(content=user_content)
+Return strict JSON only.
+""")
     ]
-
-
-# ── Parse Response ────────────────────────────────────────────────────────────
 
 def _parse_response(raw: str) -> dict:
     try:
         cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        # Fallback — return raw as BRD, empty stories
         return {
             "brd": raw,
-            "user_stories": "⚠️ Generation error — please retry.",
-            "generation_summary": "Parse error on generation output"
+            "user_stories": "Generation error — please retry.",
+            "generation_summary": "Parse error"
         }
 
-
-# ── Main Entry Point ──────────────────────────────────────────────────────────
-
-def run_generation() -> tuple[str, str]:
+def run_generation(idea: str, qa_pairs: list, conflict_flags: list) -> tuple:
     """
     Single LLM call — generates BRD + User Stories.
-
-    Returns:
-        (brd_markdown: str, user_stories_markdown: str)
-
-    Also:
-        - Saves both to session state
-        - Marks generation done
-        - Adds completion message to chat
+    Returns (brd: str, user_stories: str)
     """
     llm = get_llm()
-    messages = _build_context()
-
-    # Notify state — generation starting
-    add_chat_message(
-        "assistant",
-        "⚙️ Generating your Business Requirements Document and User Story Backlog..."
-    )
-
+    messages = _build_context(idea, qa_pairs, conflict_flags)
     raw = llm.invoke(messages).content
     parsed = _parse_response(raw)
 
     brd = parsed.get("brd", "")
     stories = parsed.get("user_stories", "")
-    summary = parsed.get("generation_summary", "")
 
-    # Persist to state
     set_brd(brd)
     set_user_stories(stories)
-    mark_generation_done()
-
-    # Completion message in chat
-    completion_msg = (
-        f"✅ **Documents generated successfully!**\n\n"
-        f"_{summary}_\n\n"
-        f"Switch to the **📄 BRD** or **📋 User Stories** tabs above to view your documents."
-    )
-    add_chat_message("assistant", completion_msg)
+    set_generation_done(True)
 
     return brd, stories
