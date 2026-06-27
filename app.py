@@ -19,6 +19,19 @@ from utils.state_manager import (
 from agents.interview_agent import start_interview, process_answer
 from agents.conflict_agent import run_conflict_scan, handle_conflict_resolution
 from agents.generator_agent import run_generation
+from utils.error_handler import has_error, get_last_error, clear_error
+
+# ── Error Banner ──────────────────────────────────────────────────────────────
+def render_error_banner():
+    if has_error():
+        st.error(f"⚠️ **Agent Error:** {get_last_error()}")
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            if st.button("🔄 Retry", type="primary"):
+                clear_error()
+                st.rerun()
+        with col2:
+            st.caption("Error may be a temporary LLM timeout. Retry usually fixes it.")
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 init_db()
@@ -55,8 +68,8 @@ with st.sidebar:
 
 # ── PHASE: LANDING ────────────────────────────────────────────────────────────
 if get_phase() == 'landing':
+    render_error_banner()
 
-    # --- Resume existing session ---
     sessions = list_sessions()
     if sessions:
         st.subheader("📂 Resume a Previous Session")
@@ -81,7 +94,6 @@ if get_phase() == 'landing':
 
         st.divider()
 
-    # --- New session ---
     st.subheader("🆕 Start New Session")
     session_name_input = st.text_input(
         "Session name",
@@ -103,77 +115,78 @@ if get_phase() == 'landing':
         else:
             set_idea(idea_input.strip())
             set_session_name(session_name_input.strip())
+            clear_error()
 
             with st.spinner("Interview Agent starting..."):
-                first_q = start_interview(idea_input.strip())
-                history = [
-                    {'role': 'assistant', 'content': first_q}
-                ]
-                set_chat_history(history)
-                set_question_count(1)
-                set_phase('interview')
-
-            # Auto-save on session start
-            save_current_session(session_name_input.strip())
+                try:
+                    first_q = start_interview(idea_input.strip())
+                    history = [{'role': 'assistant', 'content': first_q}]
+                    set_chat_history(history)
+                    set_question_count(1)
+                    set_phase('interview')
+                    save_current_session(session_name_input.strip())
+                except Exception as e:
+                    st.rerun()
             st.rerun()
 
 # ── PHASE: INTERVIEW ──────────────────────────────────────────────────────────
 elif get_phase() == 'interview':
+    render_error_banner()
 
     st.subheader("💬 Requirements Interview")
     completeness = get_completeness()
     st.progress(completeness / 100, text=f"Completeness: {completeness}%")
 
-    # Render chat history
     for msg in get_chat_history():
         with st.chat_message(msg['role']):
             st.markdown(msg['content'])
 
-    # User input
     user_input = st.chat_input("Your answer...")
     if user_input:
         history = get_chat_history()
         history.append({'role': 'user', 'content': user_input})
         set_chat_history(history)
+        clear_error()
 
         with st.spinner("Interview Agent thinking..."):
-            result = process_answer(user_input)
+            try:
+                result = process_answer(user_input)
+                history.append({'role': 'assistant', 'content': result['message']})
+                set_chat_history(history)
+                set_completeness(result['completeness'])
+                set_question_count(get_question_count() + 1)
 
-        # result = {'message': str, 'completeness': int, 'done': bool, 'qa_pair': dict}
-        history.append({'role': 'assistant', 'content': result['message']})
-        set_chat_history(history)
-        set_completeness(result['completeness'])
-        set_question_count(get_question_count() + 1)
+                if result.get('qa_pair'):
+                    qa = get_qa_pairs()
+                    qa.append(result['qa_pair'])
+                    set_qa_pairs(qa)
 
-        if result.get('qa_pair'):
-            qa = get_qa_pairs()
-            qa.append(result['qa_pair'])
-            set_qa_pairs(qa)
-
-        # Auto-save after every answer
-        save_current_session()
-
-        if result.get('done'):
-            with st.spinner("Conflict Agent scanning..."):
-                flags = run_conflict_scan(get_qa_pairs())
-                set_conflict_flags(flags)
-
-            save_current_session()
-
-            if flags:
-                set_phase('conflict')
-            else:
-                set_conflict_done(True)
-                with st.spinner("Generator Agent building documents..."):
-                    run_generation(get_idea(), get_qa_pairs(), [])
-                set_generation_done(True)
-                set_phase('done')
                 save_current_session()
+
+                if result.get('done'):
+                    with st.spinner("Conflict Agent scanning..."):
+                        flags = run_conflict_scan(get_qa_pairs())
+                        set_conflict_flags(flags)
+                    save_current_session()
+
+                    if flags:
+                        set_phase('conflict')
+                    else:
+                        set_conflict_done(True)
+                        with st.spinner("Generator Agent building documents..."):
+                            run_generation(get_idea(), get_qa_pairs(), [])
+                        set_generation_done(True)
+                        set_phase('done')
+                        save_current_session()
+
+            except Exception:
+                pass  # error_handler already set error state
 
         st.rerun()
 
 # ── PHASE: CONFLICT ───────────────────────────────────────────────────────────
 elif get_phase() == 'conflict':
+    render_error_banner()
 
     st.subheader("⚠️ Conflicts Detected")
     st.info("Resolve conflicts below before documents are generated.")
@@ -186,49 +199,57 @@ elif get_phase() == 'conflict':
             st.markdown(f"**Explanation:** {flag.get('explanation', '')}")
             st.markdown(f"**Suggestion:** {flag.get('suggestion', '')}")
 
-    # Render conflict chat history
     for msg in get_chat_history():
         with st.chat_message(msg['role']):
             st.markdown(msg['content'])
 
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([4, 1])
     with col1:
         clarification = st.chat_input("Clarify a conflict or type your resolution...")
     with col2:
         if st.button("✅ Proceed to Generation", type="primary"):
+            clear_error()
             set_conflict_done(True)
             with st.spinner("Generator Agent building documents..."):
-                run_generation(get_idea(), get_qa_pairs(), get_conflict_flags())
-            set_generation_done(True)
-            set_phase('done')
-            save_current_session()
+                try:
+                    run_generation(get_idea(), get_qa_pairs(), get_conflict_flags())
+                    set_generation_done(True)
+                    set_phase('done')
+                    save_current_session()
+                except Exception:
+                    pass
             st.rerun()
 
     if clarification:
         history = get_chat_history()
         history.append({'role': 'user', 'content': clarification})
         set_chat_history(history)
+        clear_error()
 
         with st.spinner("Re-scanning conflicts..."):
-            result = handle_conflict_resolution(clarification, get_qa_pairs())
+            try:
+                result = handle_conflict_resolution(clarification, get_qa_pairs())
+                history.append({'role': 'assistant', 'content': result['message']})
+                set_chat_history(history)
 
-        history.append({'role': 'assistant', 'content': result['message']})
-        set_chat_history(history)
+                if result.get('resolved'):
+                    set_conflict_flags(result.get('remaining_flags', []))
+                    if not result.get('remaining_flags'):
+                        set_conflict_done(True)
+                        with st.spinner("Generator Agent building documents..."):
+                            run_generation(get_idea(), get_qa_pairs(), [])
+                        set_generation_done(True)
+                        set_phase('done')
 
-        if result.get('resolved'):
-            set_conflict_flags(result.get('remaining_flags', []))
-            if not result.get('remaining_flags'):
-                set_conflict_done(True)
-                with st.spinner("Generator Agent building documents..."):
-                    run_generation(get_idea(), get_qa_pairs(), [])
-                set_generation_done(True)
-                set_phase('done')
+                save_current_session()
+            except Exception:
+                pass
 
-        save_current_session()
         st.rerun()
 
 # ── PHASE: DONE ───────────────────────────────────────────────────────────────
 elif get_phase() == 'done':
+    render_error_banner()
 
     st.subheader("✅ Documents Ready")
     st.success(f"Session: **{get_session_name()}** — saved to DB.")
@@ -239,12 +260,26 @@ elif get_phase() == 'done':
         brd = get_brd()
         if brd:
             st.markdown(brd)
-            st.download_button(
-                "⬇️ Download BRD (.md)",
-                data=brd,
-                file_name=f"{get_session_name().replace(' ', '_')}_BRD.md",
-                mime="text/markdown"
-            )
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    "⬇️ Download BRD (.md)",
+                    data=brd,
+                    file_name=f"{get_session_name().replace(' ', '_')}_BRD.md",
+                    mime="text/markdown"
+                )
+            with col2:
+                try:
+                    from utils.export_manager import export_brd_to_docx
+                    docx_bytes = export_brd_to_docx(brd, get_session_name())
+                    st.download_button(
+                        "⬇️ Download BRD (.docx)",
+                        data=docx_bytes,
+                        file_name=f"{get_session_name().replace(' ', '_')}_BRD.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                except Exception as e:
+                    st.warning(f"DOCX export error: {e}")
         else:
             st.warning("BRD not generated.")
 
@@ -252,11 +287,25 @@ elif get_phase() == 'done':
         stories = get_user_stories()
         if stories:
             st.markdown(stories)
-            st.download_button(
-                "⬇️ Download User Stories (.md)",
-                data=stories,
-                file_name=f"{get_session_name().replace(' ', '_')}_UserStories.md",
-                mime="text/markdown"
-            )
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    "⬇️ Download User Stories (.md)",
+                    data=stories,
+                    file_name=f"{get_session_name().replace(' ', '_')}_UserStories.md",
+                    mime="text/markdown"
+                )
+            with col2:
+                try:
+                    from utils.export_manager import export_stories_to_docx
+                    docx_bytes = export_stories_to_docx(stories, get_session_name())
+                    st.download_button(
+                        "⬇️ Download User Stories (.docx)",
+                        data=docx_bytes,
+                        file_name=f"{get_session_name().replace(' ', '_')}_UserStories.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                except Exception as e:
+                    st.warning(f"DOCX export error: {e}")
         else:
             st.warning("User Stories not generated.")

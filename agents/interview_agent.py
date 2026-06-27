@@ -12,8 +12,16 @@ from utils.state_manager import (
     get_completeness, set_completeness,
     get_chat_history,
 )
+from utils.error_handler import llm_call_with_retry
 
 load_dotenv()
+
+def get_llm():
+    return ChatGroq(
+        api_key=os.getenv("GROQ_API_KEY"),
+        model_name="llama-3.3-70b-versatile",
+        temperature=0.4,
+    )
 
 INTERVIEW_SYSTEM_PROMPT = """
 You are ScopeCraft's Interview Agent — an expert Business Analyst conducting 
@@ -48,13 +56,6 @@ RESPONSE FORMAT (strict JSON only, no markdown, no extra text):
   "reasoning": "<one line: why this score>"
 }
 """
-
-def get_llm():
-    return ChatGroq(
-        api_key=os.getenv("GROQ_API_KEY"),
-        model_name="llama-3.3-70b-versatile",
-        temperature=0.4,
-    )
 
 def _build_context(is_first: bool, latest_answer: str = None) -> list:
     idea = get_idea()
@@ -113,31 +114,19 @@ def _parse_response(raw: str) -> dict:
         }
 
 def start_interview(idea: str) -> str:
-    """
-    Called when user submits idea. Returns first question string.
-    """
     llm = get_llm()
     messages = _build_context(is_first=True)
-    raw = llm.invoke(messages).content
+    raw = llm_call_with_retry(llm.invoke, messages).content
     parsed = _parse_response(raw)
     set_completeness(parsed.get("completeness_score", 0))
     set_question_count(1)
     return parsed["message"]
 
 def process_answer(user_answer: str) -> dict:
-    """
-    Called each time user answers. Returns dict:
-    {
-      'message': str,
-      'completeness': int,
-      'done': bool,
-      'qa_pair': {'question': str, 'answer': str} | None
-    }
-    """
     llm = get_llm()
     q_count = get_question_count()
 
-    # Find last assistant message = question being answered
+    # Get last assistant message = question being answered
     history = get_chat_history()
     last_question = ""
     for msg in reversed(history):
@@ -153,7 +142,7 @@ def process_answer(user_answer: str) -> dict:
 
     # Call LLM
     messages = _build_context(is_first=False, latest_answer=user_answer)
-    raw = llm.invoke(messages).content
+    raw = llm_call_with_retry(llm.invoke, messages).content
     parsed = _parse_response(raw)
 
     new_score = parsed.get("completeness_score", get_completeness())
@@ -165,16 +154,15 @@ def process_answer(user_answer: str) -> dict:
     if parsed["type"] == "complete" and q_count >= 5:
         done = True
     elif parsed["type"] == "complete" and q_count < 5:
-        # Min not met — force another question
         response_msg = _force_next_question(user_answer)
 
     set_question_count(q_count + 1)
 
     return {
-        "message":     response_msg,
+        "message":      response_msg,
         "completeness": new_score,
-        "done":        done,
-        "qa_pair":     qa_pair,
+        "done":         done,
+        "qa_pair":      qa_pair,
     }
 
 def _force_next_question(latest_answer: str) -> str:
@@ -202,6 +190,6 @@ Ask one more specific clarifying question.
 Still respond in strict JSON format with type: "question".
 """)
     ]
-    raw = llm.invoke(messages).content
+    raw = llm_call_with_retry(llm.invoke, messages).content
     parsed = _parse_response(raw)
     return parsed["message"]

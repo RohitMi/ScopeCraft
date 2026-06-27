@@ -11,6 +11,7 @@ from utils.state_manager import (
     set_conflict_flags,
     get_conflict_flags,
 )
+from utils.error_handler import llm_call_with_retry
 
 load_dotenv()
 
@@ -93,23 +94,15 @@ def _parse_response(raw: str) -> dict:
         return {"conflicts": [], "total_conflicts": 0, "scan_summary": "Parse error"}
 
 def run_conflict_scan(qa_pairs: list) -> list:
-    """
-    Scans Q&A for conflicts.
-    Returns list of conflict flag dicts (empty = no conflicts).
-    """
     llm = get_llm()
     messages = _build_context()
-    raw = llm.invoke(messages).content
+    raw = llm_call_with_retry(llm.invoke, messages).content
     parsed = _parse_response(raw)
     flags = parsed.get("conflicts", [])
     set_conflict_flags(flags)
     return flags
 
 def handle_conflict_resolution(user_input: str, qa_pairs: list) -> dict:
-    """
-    Re-scans after user clarification.
-    Returns {message, resolved, remaining_flags}
-    """
     llm = get_llm()
     idea = get_idea()
     existing_flags = get_conflict_flags()
@@ -137,7 +130,7 @@ Return strict JSON as specified.
 """)
     ]
 
-    raw = llm.invoke(messages).content
+    raw = llm_call_with_retry(llm.invoke, messages).content
     parsed = _parse_response(raw)
     remaining = parsed.get("conflicts", [])
     set_conflict_flags(remaining)

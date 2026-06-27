@@ -13,6 +13,7 @@ from utils.state_manager import (
     set_user_stories,
     set_generation_done,
 )
+from utils.error_handler import llm_call_with_retry
 
 load_dotenv()
 
@@ -159,13 +160,9 @@ def _parse_response(raw: str) -> dict:
         }
 
 def run_generation(idea: str, qa_pairs: list, conflict_flags: list) -> tuple:
-    """
-    Single LLM call — generates BRD + User Stories.
-    Returns (brd: str, user_stories: str)
-    """
     llm = get_llm()
     messages = _build_context(idea, qa_pairs, conflict_flags)
-    raw = llm.invoke(messages).content
+    raw = llm_call_with_retry(llm.invoke, messages).content
     parsed = _parse_response(raw)
 
     brd = parsed.get("brd", "")
