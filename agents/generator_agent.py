@@ -1,4 +1,8 @@
 # agents/generator_agent.py
+# Generator Agent — TWO separate LLM calls
+# Call 1: BRD from idea + Q&A
+# Call 2: User Stories from idea + Q&A + BRD (richer context)
+
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
@@ -24,16 +28,14 @@ def get_llm():
         temperature=0.3,
     )
 
-GENERATOR_SYSTEM_PROMPT = """
-You are ScopeCraft's Generator Agent — an expert Business Analyst and 
-Product Manager that produces professional software development artifacts.
+# ── BRD System Prompt ─────────────────────────────────────────────────────────
 
-YOUR ROLE:
-Generate TWO documents from the product requirements provided:
-1. A structured Business Requirements Document (BRD)
-2. A prioritised User Story backlog using MoSCoW method
+BRD_SYSTEM_PROMPT = """
+You are ScopeCraft's BRD Generator — an expert Business Analyst that produces
+professional Business Requirements Documents.
 
-DOCUMENT 1 — BRD (fixed structure, markdown):
+Generate a structured BRD from the product requirements provided.
+
 Use EXACTLY these sections in this order:
 
 # Business Requirements Document
@@ -42,36 +44,53 @@ Use EXACTLY these sections in this order:
 <What problem does this product solve? Who has this problem? Why does it matter?>
 
 ## 2. Actors
-<All users, systems, and external entities that interact with the product>
 | Actor | Type | Description |
 |-------|------|-------------|
 
 ## 3. Functional Requirements
-<Numbered list of what the system must do>
 | ID | Requirement | Priority |
 |----|-------------|----------|
 
 ## 4. Non-Functional Requirements
-<Performance, security, scalability, usability constraints>
 | ID | Requirement | Category |
 |----|-------------|----------|
 
 ## 5. Scope
 ### In Scope
-<Bullet list of what IS included in this product>
+<Bullet list of what IS included>
 
 ### Out of Scope
 <Bullet list of what is explicitly NOT included>
 
 ## 6. Assumptions & Constraints
-<List all assumptions made and constraints identified>
+<List all assumptions and constraints — include any flagged conflicts here>
 
 ## 7. Success Metrics
-<How will we know this product succeeded? Measurable KPIs>
+<Measurable KPIs — how will we know this product succeeded?>
 
----
+RULES:
+- Use actual product details — no generic placeholders
+- Professional enough for client presentation
+- Return STRICT JSON only, no extra text
 
-DOCUMENT 2 — USER STORIES (MoSCoW, markdown):
+RESPONSE FORMAT:
+{
+  "brd": "<full BRD markdown as string>",
+  "brd_summary": "<two sentences: core problem solved + key actors>"
+}
+"""
+
+# ── User Stories System Prompt ────────────────────────────────────────────────
+
+STORIES_SYSTEM_PROMPT = """
+You are ScopeCraft's User Stories Generator — an expert Product Manager that
+produces developer-ready MoSCoW-prioritised user story backlogs.
+
+You will receive: the original idea, Q&A session, AND the already-generated BRD.
+Use the BRD as your primary reference — your stories must align with BRD scope,
+actors, and functional requirements exactly.
+
+Generate a User Story backlog using this EXACT structure:
 
 # User Story Backlog
 
@@ -86,9 +105,11 @@ DOCUMENT 2 — USER STORIES (MoSCoW, markdown):
 ### Epic 1: <Epic Name>
 **Goal:** <what this epic achieves>
 
-| Story ID | User Story | Acceptance Criteria | MoSCoW |
-|----------|------------|---------------------|--------|
-| US-001 | As a <actor>, I want to <action> so that <benefit> | <testable criteria> | Must Have |
+| Story ID | User Story | Acceptance Criteria | MoSCoW | Size |
+|----------|------------|---------------------|--------|------|
+| US-001 | As a <actor>, I want to <action> so that <benefit> | <testable criteria> | Must Have | M |
+
+<Size key: XS=half day, S=1 day, M=2-3 days, L=1 week, XL=2+ weeks>
 
 ## Summary
 | Priority | Count |
@@ -99,24 +120,23 @@ DOCUMENT 2 — USER STORIES (MoSCoW, markdown):
 | Won't Have | X |
 | **Total** | **X** |
 
----
-
 RULES:
-- Be specific — use actual product details, not generic placeholders
-- BRD professional enough for client presentation
-- Stories specific enough for developer to start coding
-- If conflicts flagged, note in Assumptions & Constraints
+- Actors must match BRD actors exactly
+- Story scope must stay within BRD In Scope section
+- Every story needs testable acceptance criteria
+- Size column: XS / S / M / L / XL
 - Return STRICT JSON only
 
 RESPONSE FORMAT:
 {
-  "brd": "<full BRD markdown>",
-  "user_stories": "<full User Stories markdown>",
-  "generation_summary": "<one line summary>"
+  "user_stories": "<full User Stories markdown as string>",
+  "stories_summary": "<one line: total stories + priority breakdown>"
 }
 """
 
-def _build_context(idea: str, qa_pairs: list, conflict_flags: list) -> list:
+# ── Build Contexts ────────────────────────────────────────────────────────────
+
+def _build_brd_context(idea: str, qa_pairs: list, conflict_flags: list) -> list:
     qa_text = ""
     for i, pair in enumerate(qa_pairs):
         qa_text += f"\nQ{i+1}: {pair['question']}\nA{i+1}: {pair['answer']}\n"
@@ -131,9 +151,9 @@ def _build_context(idea: str, qa_pairs: list, conflict_flags: list) -> list:
             )
 
     return [
-        SystemMessage(content=GENERATOR_SYSTEM_PROMPT),
+        SystemMessage(content=BRD_SYSTEM_PROMPT),
         HumanMessage(content=f"""
-Generate BRD and User Stories from these requirements:
+Generate BRD from these requirements:
 
 ORIGINAL IDEA:
 {idea}
@@ -148,27 +168,87 @@ Return strict JSON only.
 """)
     ]
 
-def _parse_response(raw: str) -> dict:
+def _build_stories_context(idea: str, qa_pairs: list, conflict_flags: list, brd: str) -> list:
+    qa_text = ""
+    for i, pair in enumerate(qa_pairs):
+        qa_text += f"\nQ{i+1}: {pair['question']}\nA{i+1}: {pair['answer']}\n"
+
+    conflict_text = "None detected."
+    if conflict_flags:
+        conflict_text = ""
+        for c in conflict_flags:
+            conflict_text += f"\n- {c.get('title','')}: {c.get('explanation','')}\n"
+
+    return [
+        SystemMessage(content=STORIES_SYSTEM_PROMPT),
+        HumanMessage(content=f"""
+Generate User Stories aligned to the BRD below:
+
+ORIGINAL IDEA:
+{idea}
+
+REQUIREMENTS Q&A:
+{qa_text}
+
+KNOWN CONFLICTS:
+{conflict_text}
+
+GENERATED BRD (use as primary reference):
+{brd}
+
+Return strict JSON only.
+""")
+    ]
+
+# ── Parse Responses ───────────────────────────────────────────────────────────
+
+def _parse_brd_response(raw: str) -> dict:
     try:
         cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
         return json.loads(cleaned)
     except json.JSONDecodeError:
         return {
             "brd": raw,
-            "user_stories": "Generation error — please retry.",
-            "generation_summary": "Parse error"
+            "brd_summary": "Parse error on BRD generation"
         }
 
+def _parse_stories_response(raw: str) -> dict:
+    try:
+        cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {
+            "user_stories": raw,
+            "stories_summary": "Parse error on Stories generation"
+        }
+
+# ── Main Entry Point ──────────────────────────────────────────────────────────
+
 def run_generation(idea: str, qa_pairs: list, conflict_flags: list) -> tuple:
+    """
+    TWO sequential LLM calls:
+    1. Generate BRD
+    2. Generate User Stories using BRD as context
+
+    Returns (brd: str, user_stories: str)
+    """
     llm = get_llm()
-    messages = _build_context(idea, qa_pairs, conflict_flags)
-    raw = llm_call_with_retry(llm.invoke, messages).content
-    parsed = _parse_response(raw)
 
-    brd = parsed.get("brd", "")
-    stories = parsed.get("user_stories", "")
+    # ── CALL 1: BRD ──────────────────────────────────────────────────────────
+    brd_messages = _build_brd_context(idea, qa_pairs, conflict_flags)
+    brd_raw = llm_call_with_retry(llm.invoke, brd_messages).content
+    brd_parsed = _parse_brd_response(brd_raw)
+    brd = brd_parsed.get("brd", "")
 
+    # Save BRD immediately — visible even if stories fail
     set_brd(brd)
+
+    # ── CALL 2: USER STORIES (uses BRD as input) ──────────────────────────────
+    stories_messages = _build_stories_context(idea, qa_pairs, conflict_flags, brd)
+    stories_raw = llm_call_with_retry(llm.invoke, stories_messages).content
+    stories_parsed = _parse_stories_response(stories_raw)
+    stories = stories_parsed.get("user_stories", "")
+
     set_user_stories(stories)
     set_generation_done(True)
 

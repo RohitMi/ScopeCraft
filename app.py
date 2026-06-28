@@ -129,7 +129,7 @@ if get_phase() == 'landing':
                     set_question_count(1)
                     set_phase('interview')
                     save_current_session(session_name_input.strip())
-                except Exception as e:
+                except Exception:
                     st.rerun()
             st.rerun()
 
@@ -182,14 +182,14 @@ elif get_phase() == 'interview':
                         set_phase('conflict')
                     else:
                         set_conflict_done(True)
-                        with st.spinner("Generator Agent building documents..."):
+                        with st.spinner("Generator Agent — Building BRD (call 1 of 2)..."):
                             run_generation(get_idea(), get_qa_pairs(), [])
                         set_generation_done(True)
                         set_phase('done')
                         save_current_session()
 
             except Exception:
-                pass  # error_handler already set error state
+                pass
 
         st.rerun()
 
@@ -219,7 +219,7 @@ elif get_phase() == 'conflict':
         if st.button("✅ Proceed to Generation", type="primary"):
             clear_error()
             set_conflict_done(True)
-            with st.spinner("Generator Agent building documents..."):
+            with st.spinner("Generator Agent — Building BRD then Stories (2 LLM calls)..."):
                 try:
                     run_generation(get_idea(), get_qa_pairs(), get_conflict_flags())
                     set_generation_done(True)
@@ -250,7 +250,7 @@ elif get_phase() == 'conflict':
                     set_conflict_flags(result.get('remaining_flags', []))
                     if not result.get('remaining_flags'):
                         set_conflict_done(True)
-                        with st.spinner("Generator Agent building documents..."):
+                        with st.spinner("Generator Agent — Building BRD then Stories (2 LLM calls)..."):
                             run_generation(get_idea(), get_qa_pairs(), [])
                         set_generation_done(True)
                         set_phase('done')
