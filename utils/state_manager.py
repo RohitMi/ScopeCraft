@@ -4,20 +4,19 @@ from utils.db_manager import save_session, load_session
 def init_state():
     """Initialise all session state keys if not present."""
     defaults = {
-        'phase':           'landing',   # landing | interview | conflict | done
+        'phase':           'landing',
         'idea':            '',
-        'qa_pairs':        [],          # [{'question': ..., 'answer': ...}]
-        'chat_history':    [],          # [{'role': 'assistant'|'user', 'content': ...}]
-        'conflict_flags':  [],          # [{'title':..,'explanation':..,'suggestion':..}]
+        'qa_pairs':        [],
+        'chat_history':    [],
+        'conflict_flags':  [],
         'brd':             '',
         'user_stories':    '',
         'question_count':  0,
         'completeness':    0,
         'generation_done': False,
         'conflict_done':   False,
-        # Session persistence keys
-        'session_id':      None,        # DB row ID once saved
-        'session_name':    '',          # User-given name
+        'session_id':      None,
+        'session_name':    '',
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -28,7 +27,8 @@ def reset_state():
     keys = [
         'phase', 'idea', 'qa_pairs', 'chat_history', 'conflict_flags',
         'brd', 'user_stories', 'question_count', 'completeness',
-        'generation_done', 'conflict_done', 'session_id', 'session_name'
+        'generation_done', 'conflict_done', 'session_id', 'session_name',
+        'acceptance_tests', 'hld'
     ]
     for key in keys:
         if key in st.session_state:
@@ -68,7 +68,6 @@ def set_session_name(v):   st.session_state['session_name'] = v
 # --- Persistence helpers ---
 
 def _build_state_snapshot() -> dict:
-    """Pull current session_state into a plain dict for DB save."""
     return {
         'idea':           get_idea(),
         'qa_pairs':       get_qa_pairs(),
@@ -79,11 +78,6 @@ def _build_state_snapshot() -> dict:
     }
 
 def save_current_session(name: str = None) -> int:
-    """
-    Save current state to DB.
-    If session_id exists → UPDATE. Else → INSERT.
-    Returns session_id.
-    """
     session_name = name or get_session_name() or 'Untitled Session'
     set_session_name(session_name)
     snapshot = _build_state_snapshot()
@@ -96,15 +90,11 @@ def save_current_session(name: str = None) -> int:
     return sid
 
 def load_session_into_state(session_id: int) -> bool:
-    """
-    Load DB row into Streamlit session_state.
-    Returns True on success, False if not found.
-    """
     data = load_session(session_id)
     if not data:
         return False
 
-    reset_state()  # wipe first, then populate
+    reset_state()
 
     set_idea(data['idea'])
     set_qa_pairs(data['qa_pairs'])
@@ -115,7 +105,6 @@ def load_session_into_state(session_id: int) -> bool:
     set_session_id(data['session_id'])
     set_session_name(data['session_name'])
 
-    # Restore phase from loaded data
     if data['brd']:
         set_phase('done')
         set_generation_done(True)

@@ -198,25 +198,52 @@ elif get_phase() == 'conflict':
     render_error_banner()
 
     st.subheader("⚠️ Conflicts Detected")
-    st.info("Resolve conflicts below before documents are generated.")
+    st.info("Review each conflict below. Clarify in chat or click Proceed when ready.")
 
     flags = get_conflict_flags()
     for i, flag in enumerate(flags):
-        with st.expander(f"⚠️ {flag.get('title', f'Conflict {i+1}')}"):
-            st.markdown(f"**Source A:** {flag.get('source_a', '')}")
-            st.markdown(f"**Source B:** {flag.get('source_b', '')}")
-            st.markdown(f"**Explanation:** {flag.get('explanation', '')}")
-            st.markdown(f"**Suggestion:** {flag.get('suggestion', '')}")
+        with st.expander(f"⚠️ {flag.get('title', f'Conflict {i+1}')}", expanded=True):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown(f"**📌 Source A:**\n\n_{flag.get('source_a', '')}_")
+                st.markdown(f"**📌 Source B:**\n\n_{flag.get('source_b', '')}_")
+            with col_b:
+                st.markdown(f"**❗ Issue:**\n\n{flag.get('explanation', '')}")
+                st.markdown(f"**💡 Suggestion:**\n\n{flag.get('suggestion', '')}")
+
+            if st.button("✅ Mark Resolved", key=f"resolve_{i}"):
+                remaining = [f for j, f in enumerate(flags) if j != i]
+                set_conflict_flags(remaining)
+                history = get_chat_history()
+                history.append({
+                    'role': 'assistant',
+                    'content': f"✅ Conflict **{flag.get('title', f'Conflict {i+1}')}** marked as resolved."
+                })
+                set_chat_history(history)
+                save_current_session()
+                st.rerun()
+
+    st.divider()
 
     for msg in get_chat_history():
         with st.chat_message(msg['role']):
             st.markdown(msg['content'])
 
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        clarification = st.chat_input("Clarify a conflict or type your resolution...")
-    with col2:
-        if st.button("✅ Proceed to Generation", type="primary"):
+    st.markdown("**Resolve via chat or proceed directly:**")
+    col_chat, col_proceed = st.columns([3, 1])
+
+    with col_chat:
+        clarification = st.chat_input("Clarify a conflict...")
+
+    with col_proceed:
+        remaining_count = len(get_conflict_flags())
+        btn_label = (
+            "✅ Proceed to Generation"
+            if remaining_count == 0
+            else f"⚠️ Proceed Anyway ({remaining_count} unresolved)"
+        )
+        btn_type = "primary" if remaining_count == 0 else "secondary"
+        if st.button(btn_label, type=btn_type, key="proceed_btn"):
             clear_error()
             set_conflict_done(True)
             with st.spinner("Generator Agent — Building BRD then Stories (2 LLM calls)..."):
@@ -268,7 +295,12 @@ elif get_phase() == 'done':
     st.subheader("✅ Documents Ready")
     st.success(f"Session: **{get_session_name()}** — saved to DB.")
 
-    tab_ba, tab_dev = st.tabs(["📋 BA View — BRD", "👨‍💻 Dev View — User Stories"])
+    tab_ba, tab_dev, tab_qa, tab_hld = st.tabs([
+        "📋 BA View — BRD",
+        "👨‍💻 Dev View — User Stories",
+        "🧪 QA View — Acceptance Tests",
+        "🏗️ Architect View — HLD"
+    ])
 
     with tab_ba:
         brd = get_brd()
@@ -323,3 +355,63 @@ elif get_phase() == 'done':
                     st.warning(f"DOCX export error: {e}")
         else:
             st.warning("User Stories not generated.")
+
+    with tab_qa:
+        st.markdown("### 🧪 Acceptance Test Scenarios")
+        st.caption("Gherkin scenarios generated from your User Stories.")
+
+        if not st.session_state.get('acceptance_tests'):
+            if st.button("⚙️ Generate Acceptance Tests", type="primary"):
+                with st.spinner("Test Agent generating Gherkin scenarios..."):
+                    try:
+                        from agents.test_agent import run_test_generation
+                        tests = run_test_generation()
+                        st.session_state['acceptance_tests'] = tests
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Test generation error: {e}")
+        else:
+            tests = st.session_state['acceptance_tests']
+            st.markdown(tests)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    "⬇️ Download Tests (.md)",
+                    data=tests,
+                    file_name=f"{get_session_name().replace(' ', '_')}_AcceptanceTests.md",
+                    mime="text/markdown"
+                )
+            with col2:
+                if st.button("🔄 Regenerate Tests"):
+                    del st.session_state['acceptance_tests']
+                    st.rerun()
+
+    with tab_hld:
+        st.markdown("### 🏗️ High Level Design")
+        st.caption("Architecture diagram + tech stack + design decisions.")
+
+        if not st.session_state.get('hld'):
+            if st.button("⚙️ Generate HLD", type="primary"):
+                with st.spinner("HLD Agent generating architecture diagrams..."):
+                    try:
+                        from agents.hld_agent import run_hld_generation
+                        hld = run_hld_generation()
+                        st.session_state['hld'] = hld
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"HLD generation error: {e}")
+        else:
+            hld = st.session_state['hld']
+            st.markdown(hld)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    "⬇️ Download HLD (.md)",
+                    data=hld,
+                    file_name=f"{get_session_name().replace(' ', '_')}_HLD.md",
+                    mime="text/markdown"
+                )
+            with col2:
+                if st.button("🔄 Regenerate HLD"):
+                    del st.session_state['hld']
+                    st.rerun()

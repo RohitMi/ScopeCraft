@@ -105,20 +105,41 @@ Generate a User Story backlog using this EXACT structure:
 ### Epic 1: <Epic Name>
 **Goal:** <what this epic achieves>
 
-| Story ID | User Story | Acceptance Criteria | MoSCoW | Size |
-|----------|------------|---------------------|--------|------|
-| US-001 | As a <actor>, I want to <action> so that <benefit> | <testable criteria> | Must Have | M |
+| Story ID | User Story | Acceptance Criteria | MoSCoW | Size | Effort |
+|----------|------------|---------------------|--------|------|--------|
+| US-001 | As a <actor>, I want to <action> so that <benefit> | <testable criteria> | Must Have | M | 2-3 days |
+
+**Epic Effort Total:** ~X days
 
 <Size key: XS=half day, S=1 day, M=2-3 days, L=1 week, XL=2+ weeks>
 
+EFFORT SIZING RULES:
+- XS: Simple UI change, config update, copy change
+- S: Single form, basic CRUD endpoint, simple validation
+- M: Feature with frontend + backend + DB + tests
+- L: Complex feature, third-party integration, auth flow
+- XL: New subsystem, major architecture change, ML component
+- Size every single story — no blanks
+- Add effort summary at bottom of each epic
+
 ## Summary
-| Priority | Count |
-|----------|-------|
-| Must Have | X |
-| Should Have | X |
-| Could Have | X |
-| Won't Have | X |
-| **Total** | **X** |
+| Priority | Count | Est. Effort |
+|----------|-------|-------------|
+| Must Have | X | X days |
+| Should Have | X | X days |
+| Could Have | X | X days |
+| Won't Have | X | — |
+| **Total** | **X** | **X days** |
+
+## Effort Overview
+| Size | Count | Days Each | Total Days |
+|------|-------|-----------|------------|
+| XS | X | 0.5 | X |
+| S | X | 1 | X |
+| M | X | 2.5 | X |
+| L | X | 5 | X |
+| XL | X | 10 | X |
+| **Total** | **X** | — | **X days** |
 
 RULES:
 - Actors must match BRD actors exactly
