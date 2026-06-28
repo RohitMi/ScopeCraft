@@ -20,6 +20,7 @@ from agents.interview_agent import start_interview, process_answer
 from agents.conflict_agent import run_conflict_scan, handle_conflict_resolution
 from agents.generator_agent import run_generation
 from utils.error_handler import has_error, get_last_error, clear_error
+from utils.validators import validate_idea, validate_session_name, validate_answer, validate_conflict_input
 
 # ── Error Banner ──────────────────────────────────────────────────────────────
 def render_error_banner():
@@ -108,10 +109,13 @@ if get_phase() == 'landing':
     )
 
     if st.button("🚀 Start Requirements Interview", type="primary"):
-        if not idea_input.strip():
-            st.warning("Enter an app idea first.")
-        elif not session_name_input.strip():
-            st.warning("Give this session a name.")
+        name_valid, name_err = validate_session_name(session_name_input)
+        idea_valid, idea_err = validate_idea(idea_input)
+
+        if not name_valid:
+            st.warning(f"⚠️ {name_err}")
+        elif not idea_valid:
+            st.warning(f"⚠️ {idea_err}")
         else:
             set_idea(idea_input.strip())
             set_session_name(session_name_input.strip())
@@ -143,6 +147,11 @@ elif get_phase() == 'interview':
 
     user_input = st.chat_input("Your answer...")
     if user_input:
+        answer_valid, answer_err = validate_answer(user_input)
+        if not answer_valid:
+            st.warning(f"⚠️ {answer_err}")
+            st.stop()
+
         history = get_chat_history()
         history.append({'role': 'user', 'content': user_input})
         set_chat_history(history)
@@ -221,6 +230,11 @@ elif get_phase() == 'conflict':
             st.rerun()
 
     if clarification:
+        conflict_valid, conflict_err = validate_conflict_input(clarification)
+        if not conflict_valid:
+            st.warning(f"⚠️ {conflict_err}")
+            st.stop()
+
         history = get_chat_history()
         history.append({'role': 'user', 'content': clarification})
         set_chat_history(history)

@@ -123,6 +123,16 @@ def start_interview(idea: str) -> str:
     return parsed["message"]
 
 def process_answer(user_answer: str) -> dict:
+    from utils.validators import validate_answer
+    is_valid, err_msg = validate_answer(user_answer)
+    if not is_valid:
+        return {
+            "message":      f"⚠️ {err_msg} Please try again.",
+            "completeness": get_completeness(),
+            "done":         False,
+            "qa_pair":      None,
+        }
+
     llm = get_llm()
     q_count = get_question_count()
 
